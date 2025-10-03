@@ -2,6 +2,7 @@
 using OpenTK.Mathematics;
 using OpenTK.Windowing.Common;
 using OpenTK.Windowing.Desktop;
+using OpenTK.Windowing.GraphicsLibraryFramework;
 using System;
 
 namespace WindowEngine
@@ -14,7 +15,7 @@ namespace WindowEngine
             var nativeSettings = new NativeWindowSettings
             {
                 Size = new Vector2i(800, 600),
-                Title = "Exercise 4: Generic Coordinate Transformers",
+                Title = "Exercise 5: Interactive Function Plotter",
                 Profile = ContextProfile.Core,
                 APIVersion = new Version(3, 3)
             };
@@ -26,17 +27,32 @@ namespace WindowEngine
             {
                 game.Init();
                 Console.WriteLine($"OpenGL Version: {GL.GetString(StringName.Version)}");
+                Console.WriteLine("=== CONTROLS ===");
+                Console.WriteLine("Z - Zoom In");
+                Console.WriteLine("X - Zoom Out");
+                Console.WriteLine("Arrow Keys - Pan camera");
+                Console.WriteLine("R - Reset view");
+                Console.WriteLine("ESC - Exit");
             };
 
             // Handle window resize
             window.Resize += (args) =>
             {
                 GL.Viewport(0, 0, args.Width, args.Height);
-
-                // Update the game's screen dimensions
                 game.UpdateScreenSize(args.Width, args.Height);
+            };
 
-                Console.WriteLine($"Window resized to: {args.Width}x{args.Height}");
+            // Handle keyboard input in update frame
+            window.UpdateFrame += (args) =>
+            {
+                // Pass keyboard state to game for handling
+                game.HandleInput(window.KeyboardState, (float)args.Time);
+
+                // ESC to exit
+                if (window.KeyboardState.IsKeyDown(Keys.Escape))
+                {
+                    window.Close();
+                }
             };
 
             window.RenderFrame += (args) =>
