@@ -10,38 +10,43 @@ namespace WindowEngine
     {
         static void Main(string[] args)
         {
-            // Configure window settings
             var windowSettings = GameWindowSettings.Default;
             var nativeSettings = new NativeWindowSettings
             {
-                Size = new Vector2i(800, 600), // 800x600 window
-                Title = "Square Demo",
-                Profile = ContextProfile.Core, // OpenGL 3.3 Core Profile
+                Size = new Vector2i(800, 600),
+                Title = "Exercise 4: Generic Coordinate Transformers",
+                Profile = ContextProfile.Core,
                 APIVersion = new Version(3, 3)
             };
 
-            // Create window and game
             using var window = new GameWindow(windowSettings, nativeSettings);
             var game = new Game(800, 600);
 
-            // Initialize OpenGL
             window.Load += () =>
             {
                 game.Init();
                 Console.WriteLine($"OpenGL Version: {GL.GetString(StringName.Version)}");
             };
 
-            // Render loop
+            // Handle window resize
+            window.Resize += (args) =>
+            {
+                GL.Viewport(0, 0, args.Width, args.Height);
+
+                // Update the game's screen dimensions
+                game.UpdateScreenSize(args.Width, args.Height);
+
+                Console.WriteLine($"Window resized to: {args.Width}x{args.Height}");
+            };
+
             window.RenderFrame += (args) =>
             {
                 game.Tick();
-                window.SwapBuffers(); // Ensure content is displayed
+                window.SwapBuffers();
             };
 
-            // Cleanup
             window.Unload += () => game.Cleanup();
 
-            // Run the window
             window.Run();
         }
     }
