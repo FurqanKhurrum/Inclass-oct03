@@ -15,7 +15,7 @@ namespace WindowEngine
             var nativeSettings = new NativeWindowSettings
             {
                 Size = new Vector2i(1024, 768),
-                Title = "Exercise 8: 3D Landscape Renderer",
+                Title = "Exercise 9: Shader-Based 3D Terrain",
                 Profile = ContextProfile.Core,
                 APIVersion = new Version(3, 3)
             };
@@ -27,6 +27,9 @@ namespace WindowEngine
             {
                 game.Init();
                 Console.WriteLine($"OpenGL Version: {GL.GetString(StringName.Version)}");
+                Console.WriteLine($"GLSL Version: {GL.GetString(StringName.ShadingLanguageVersion)}");
+                Console.WriteLine($"Renderer: {GL.GetString(StringName.Renderer)}");
+                Console.WriteLine("\nShader-based rendering initialized!");
             };
 
             window.Resize += (args) =>
@@ -48,7 +51,11 @@ namespace WindowEngine
                 window.SwapBuffers();
             };
 
-            window.Unload += () => game.Cleanup();
+            window.Unload += () =>
+            {
+                game.Cleanup();
+                Console.WriteLine("Cleaned up resources");
+            };
 
             window.Run();
         }

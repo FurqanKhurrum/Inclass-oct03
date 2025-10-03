@@ -4,6 +4,7 @@ using OpenTK.Windowing.GraphicsLibraryFramework;
 using System;
 using System.Drawing;
 using System.Diagnostics;
+using System.IO;
 
 namespace WindowEngine
 {
@@ -15,18 +16,16 @@ namespace WindowEngine
         private int vao, vbo, shaderProgram;
         private float rotationAngle = 0.0f;
         private float flyoverZ = -5.0f;
-        private const int MAP_SIZE = 128; // Change to 512 for performance test!
+        private const int MAP_SIZE = 128;
 
         private float[] vertexData;
         private int vertexCount;
 
-        // FPS counter
         private Stopwatch fpsTimer;
         private int frameCount = 0;
         private double elapsedTime = 0;
         private double currentFPS = 0;
 
-        // Animation
         private float timeAccumulator = 0.0f;
         private bool animateWaves = false;
 
@@ -41,6 +40,69 @@ namespace WindowEngine
             screen.width = width;
             screen.height = height;
             GL.Viewport(0, 0, width, height);
+        }
+
+        /// <summary>
+        /// Load shader source from file
+        /// </summary>
+        private string LoadShaderSource(string filename)
+        {
+            try
+            {
+                return File.ReadAllText(filename);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading shader {filename}: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Utility function to compile a shader
+        /// Returns shader ID if successful
+        /// </summary>
+        private int CompileShader(string source, ShaderType type)
+        {
+            int shader = GL.CreateShader(type);
+            GL.ShaderSource(shader, source);
+            GL.CompileShader(shader);
+
+            // Check for compilation errors
+            GL.GetShader(shader, ShaderParameter.CompileStatus, out int success);
+            if (success == 0)
+            {
+                string infoLog = GL.GetShaderInfoLog(shader);
+                Console.WriteLine($"{type} Compilation Error:\n{infoLog}");
+                throw new Exception($"Shader compilation failed: {type}");
+            }
+
+            Console.WriteLine($"{type} compiled successfully");
+            return shader;
+        }
+
+        /// <summary>
+        /// Utility function to link shader program
+        /// Takes vertex and fragment shader IDs, returns program ID
+        /// </summary>
+        private int LinkShaderProgram(int vertexShader, int fragmentShader)
+        {
+            int program = GL.CreateProgram();
+            GL.AttachShader(program, vertexShader);
+            GL.AttachShader(program, fragmentShader);
+            GL.LinkProgram(program);
+
+            // Check for linking errors
+            GL.GetProgram(program, GetProgramParameterName.LinkStatus, out int success);
+            if (success == 0)
+            {
+                string infoLog = GL.GetProgramInfoLog(program);
+                Console.WriteLine($"Program Link Error:\n{infoLog}");
+                throw new Exception("Shader program linking failed");
+            }
+
+            Console.WriteLine("Shader program linked successfully");
+            return program;
         }
 
         private void LoadHeightmap(string filename)
@@ -77,7 +139,6 @@ namespace WindowEngine
                 map = new Surface(MAP_SIZE, MAP_SIZE);
                 h = new float[MAP_SIZE, MAP_SIZE];
 
-                // Create interesting procedural terrain with multiple hills
                 for (int y = 0; y < MAP_SIZE; y++)
                 {
                     for (int x = 0; x < MAP_SIZE; x++)
@@ -85,7 +146,6 @@ namespace WindowEngine
                         float nx = x / (float)MAP_SIZE;
                         float ny = y / (float)MAP_SIZE;
 
-                        // Multiple octaves of noise for interesting terrain
                         float height = 0;
                         height += 0.5f * PerlinNoise(nx * 2, ny * 2);
                         height += 0.25f * PerlinNoise(nx * 4, ny * 4);
@@ -97,7 +157,6 @@ namespace WindowEngine
             }
         }
 
-        // Simple Perlin-like noise function
         private float PerlinNoise(float x, float y)
         {
             int xi = (int)x;
@@ -170,12 +229,10 @@ namespace WindowEngine
                     float[] color01 = GetHeightColor(h[x, z + 1]);
                     float[] color11 = GetHeightColor(h[x + 1, z + 1]);
 
-                    // Triangle 1
                     AddVertex(ref index, x0, y00, z0, color00);
                     AddVertex(ref index, x0, y01, z1, color01);
                     AddVertex(ref index, x1, y10, z0, color10);
 
-                    // Triangle 2
                     AddVertex(ref index, x1, y10, z0, color10);
                     AddVertex(ref index, x0, y01, z1, color01);
                     AddVertex(ref index, x1, y11, z1, color11);
@@ -217,7 +274,29 @@ namespace WindowEngine
             LoadHeightmap("heightmap.png");
             PrepareVertexData();
 
-            // Create VBO
+            // GRAPHICS PIPELINE SETUP:
+            // The modern OpenGL pipeline has 3 main programmable stages:
+            // 1. VERTEX SHADER: Processes each vertex (position transforms, lighting prep)
+            // 2. RASTERIZER: Fixed-function stage that converts triangles to fragments (pixels)
+            // 3. FRAGMENT SHADER: Processes each pixel (texturing, lighting, effects)
+
+            Console.WriteLine("\n=== Loading Shaders ===");
+
+            // Load and compile shaders from files
+            string vertexSource = LoadShaderSource("vs.glsl");
+            string fragmentSource = LoadShaderSource("fs.glsl");
+
+            int vertexShader = CompileShader(vertexSource, ShaderType.VertexShader);
+            int fragmentShader = CompileShader(fragmentSource, ShaderType.FragmentShader);
+
+            // Link shaders into a complete program
+            shaderProgram = LinkShaderProgram(vertexShader, fragmentShader);
+
+            // Clean up shader objects (program keeps the compiled code)
+            GL.DeleteShader(vertexShader);
+            GL.DeleteShader(fragmentShader);
+
+            // Create VBO for vertex data (positions + colors interleaved)
             vbo = GL.GenBuffer();
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
             GL.BufferData(BufferTarget.ArrayBuffer,
@@ -225,61 +304,19 @@ namespace WindowEngine
                          vertexData,
                          BufferUsageHint.StaticDraw);
 
-            // Create VAO
+            // Create VAO to store vertex attribute configuration
             vao = GL.GenVertexArray();
             GL.BindVertexArray(vao);
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
 
+            // Configure vertex attributes (tells shader how to read VBO data)
+            // Location 0: Position (3 floats: x, y, z)
             GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 6 * sizeof(float), 0);
             GL.EnableVertexAttribArray(0);
+
+            // Location 1: Color (3 floats: r, g, b)
             GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, 6 * sizeof(float), 3 * sizeof(float));
             GL.EnableVertexAttribArray(1);
-
-            string vertexShaderSource = @"
-                #version 330 core
-                layout(location = 0) in vec3 aPosition;
-                layout(location = 1) in vec3 aColor;
-                
-                out vec3 vColor;
-                
-                uniform mat4 uModel;
-                uniform mat4 uView;
-                uniform mat4 uProjection;
-                
-                void main()
-                {
-                    gl_Position = uProjection * uView * uModel * vec4(aPosition, 1.0);
-                    vColor = aColor;
-                }";
-
-            string fragmentShaderSource = @"
-                #version 330 core
-                in vec3 vColor;
-                out vec4 FragColor;
-                
-                void main()
-                {
-                    FragColor = vec4(vColor, 1.0);
-                }";
-
-            int vertexShader = GL.CreateShader(ShaderType.VertexShader);
-            GL.ShaderSource(vertexShader, vertexShaderSource);
-            GL.CompileShader(vertexShader);
-            CheckShaderError(vertexShader, "Vertex Shader");
-
-            int fragmentShader = GL.CreateShader(ShaderType.FragmentShader);
-            GL.ShaderSource(fragmentShader, fragmentShaderSource);
-            GL.CompileShader(fragmentShader);
-            CheckShaderError(fragmentShader, "Fragment Shader");
-
-            shaderProgram = GL.CreateProgram();
-            GL.AttachShader(shaderProgram, vertexShader);
-            GL.AttachShader(shaderProgram, fragmentShader);
-            GL.LinkProgram(shaderProgram);
-            CheckProgramError(shaderProgram);
-
-            GL.DeleteShader(vertexShader);
-            GL.DeleteShader(fragmentShader);
 
             Console.WriteLine("\n=== CONTROLS ===");
             Console.WriteLine("Arrow Keys: Rotate");
@@ -327,18 +364,15 @@ namespace WindowEngine
             rotationAngle += 0.2f;
 
             if (animateWaves)
-            {
                 timeAccumulator += 0.016f;
-            }
 
-            // FPS counter
             frameCount++;
             elapsedTime = fpsTimer.Elapsed.TotalSeconds;
 
             if (elapsedTime >= 1.0)
             {
                 currentFPS = frameCount / elapsedTime;
-                Console.WriteLine($"FPS: {currentFPS:F1} | Vertices: {vertexCount} | Draw calls: 1");
+                Console.WriteLine($"FPS: {currentFPS:F1} | Vertices: {vertexCount} | Triangles: {vertexCount / 3}");
                 frameCount = 0;
                 fpsTimer.Restart();
             }
@@ -350,16 +384,14 @@ namespace WindowEngine
 
         private void RenderGL()
         {
+            // Use our shader program
             GL.UseProgram(shaderProgram);
 
-            // Model matrix with optional wave animation
+            // Model matrix
             Matrix4 model = Matrix4.CreateRotationY(MathHelper.DegreesToRadians(rotationAngle));
 
             if (animateWaves)
-            {
-                // Add wavy motion
                 model = Matrix4.CreateScale(1.0f, 1.0f + 0.1f * (float)Math.Sin(timeAccumulator), 1.0f) * model;
-            }
 
             // View matrix
             Vector3 cameraPos = new Vector3(0, 2.0f, flyoverZ);
@@ -376,7 +408,7 @@ namespace WindowEngine
                 100.0f
             );
 
-            // Set uniforms
+            // Send Matrix4 uniforms to shader
             int modelLoc = GL.GetUniformLocation(shaderProgram, "uModel");
             int viewLoc = GL.GetUniformLocation(shaderProgram, "uView");
             int projectionLoc = GL.GetUniformLocation(shaderProgram, "uProjection");
@@ -385,8 +417,7 @@ namespace WindowEngine
             GL.UniformMatrix4(viewLoc, false, ref view);
             GL.UniformMatrix4(projectionLoc, false, ref projection);
 
-            // EFFICIENT RENDERING: Single draw call for entire terrain!
-            // This is the power of VBOs - all vertex data already on GPU
+            // Enable vertex attributes and draw
             GL.BindVertexArray(vao);
             GL.DrawArrays(PrimitiveType.Triangles, 0, vertexCount);
 
@@ -406,26 +437,6 @@ namespace WindowEngine
             if (error != OpenTK.Graphics.OpenGL4.ErrorCode.NoError)
             {
                 Console.WriteLine($"OpenGL Error at {context}: {error}");
-            }
-        }
-
-        private void CheckShaderError(int shader, string name)
-        {
-            GL.GetShader(shader, ShaderParameter.CompileStatus, out int success);
-            if (success == 0)
-            {
-                string infoLog = GL.GetShaderInfoLog(shader);
-                Console.WriteLine($"{name} Compilation Error: {infoLog}");
-            }
-        }
-
-        private void CheckProgramError(int program)
-        {
-            GL.GetProgram(program, GetProgramParameterName.LinkStatus, out int success);
-            if (success == 0)
-            {
-                string infoLog = GL.GetProgramInfoLog(program);
-                Console.WriteLine($"Program Link Error: {infoLog}");
             }
         }
     }
