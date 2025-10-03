@@ -15,7 +15,7 @@ namespace WindowEngine
             var nativeSettings = new NativeWindowSettings
             {
                 Size = new Vector2i(1024, 768),
-                Title = "Exercise 6: 3D Landscape Renderer",
+                Title = "Exercise 8: 3D Landscape Renderer",
                 Profile = ContextProfile.Core,
                 APIVersion = new Version(3, 3)
             };

@@ -3,8 +3,7 @@ using OpenTK.Mathematics;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 using System;
 using System.Drawing;
-using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
+using System.Diagnostics;
 
 namespace WindowEngine
 {
@@ -13,29 +12,37 @@ namespace WindowEngine
         private readonly Surface screen;
         private Surface map;
         private float[,] h;
-        private int vao, vbo, ebo, shaderProgram;
+        private int vao, vbo, shaderProgram;
         private float rotationAngle = 0.0f;
         private float flyoverZ = -5.0f;
-        private const int MAP_SIZE = 128;
+        private const int MAP_SIZE = 128; // Change to 512 for performance test!
+
+        private float[] vertexData;
+        private int vertexCount;
+
+        // FPS counter
+        private Stopwatch fpsTimer;
+        private int frameCount = 0;
+        private double elapsedTime = 0;
+        private double currentFPS = 0;
+
+        // Animation
+        private float timeAccumulator = 0.0f;
+        private bool animateWaves = false;
 
         public Game(int width, int height)
         {
             screen = new Surface(width, height);
+            fpsTimer = Stopwatch.StartNew();
         }
 
         public void UpdateScreenSize(int width, int height)
         {
             screen.width = width;
             screen.height = height;
-
-            // Update viewport
             GL.Viewport(0, 0, width, height);
         }
 
-        /// <summary>
-        /// Load heightmap from PNG file
-        /// Extracts grayscale values and converts to height data
-        /// </summary>
         private void LoadHeightmap(string filename)
         {
             try
@@ -48,19 +55,13 @@ namespace WindowEngine
                     map = new Surface(width, height);
                     h = new float[width, height];
 
-                    // Extract height data from grayscale values
                     for (int y = 0; y < height; y++)
                     {
                         for (int x = 0; x < width; x++)
                         {
                             Color pixel = bitmap.GetPixel(x, y);
-                            // Use red channel for grayscale (R=G=B in grayscale images)
                             int grayscale = pixel.R;
-
-                            // Store in map pixels
                             map.pixels[x + y * width] = grayscale;
-
-                            // Convert to height: 0-255 -> 0.0-1.0
                             h[x, y] = grayscale / 256f;
                         }
                     }
@@ -71,148 +72,169 @@ namespace WindowEngine
             catch (Exception ex)
             {
                 Console.WriteLine($"Error loading heightmap: {ex.Message}");
-                Console.WriteLine("Creating default flat terrain...");
+                Console.WriteLine("Creating procedural terrain...");
 
-                // Create default flat terrain
                 map = new Surface(MAP_SIZE, MAP_SIZE);
                 h = new float[MAP_SIZE, MAP_SIZE];
 
-                // Create a simple test pattern
+                // Create interesting procedural terrain with multiple hills
                 for (int y = 0; y < MAP_SIZE; y++)
                 {
                     for (int x = 0; x < MAP_SIZE; x++)
                     {
-                        // Create a simple hill in the center
-                        float dx = (x - MAP_SIZE / 2f) / (MAP_SIZE / 4f);
-                        float dy = (y - MAP_SIZE / 2f) / (MAP_SIZE / 4f);
-                        float dist = (float)Math.Sqrt(dx * dx + dy * dy);
-                        h[x, y] = Math.Max(0, 1.0f - dist * 0.5f);
+                        float nx = x / (float)MAP_SIZE;
+                        float ny = y / (float)MAP_SIZE;
+
+                        // Multiple octaves of noise for interesting terrain
+                        float height = 0;
+                        height += 0.5f * PerlinNoise(nx * 2, ny * 2);
+                        height += 0.25f * PerlinNoise(nx * 4, ny * 4);
+                        height += 0.125f * PerlinNoise(nx * 8, ny * 8);
+
+                        h[x, y] = Math.Clamp(height, 0, 1);
                     }
                 }
             }
         }
 
-        /// <summary>
-        /// Generate vertex and index data for the terrain mesh
-        /// Creates a grid of quads (as triangles) from heightmap
-        /// </summary>
-        private void GenerateTerrainMesh(out float[] vertices, out uint[] indices)
+        // Simple Perlin-like noise function
+        private float PerlinNoise(float x, float y)
         {
-            int gridSize = MAP_SIZE - 1; // 127x127 quads
-            int vertexCount = MAP_SIZE * MAP_SIZE;
-            int indexCount = gridSize * gridSize * 6; // 6 indices per quad (2 triangles)
+            int xi = (int)x;
+            int yi = (int)y;
+            float xf = x - xi;
+            float yf = y - yi;
 
-            vertices = new float[vertexCount * 6]; // x, y, z, r, g, b per vertex
-            indices = new uint[indexCount];
+            float n00 = DotGridGradient(xi, yi, x, y);
+            float n10 = DotGridGradient(xi + 1, yi, x, y);
+            float n01 = DotGridGradient(xi, yi + 1, x, y);
+            float n11 = DotGridGradient(xi + 1, yi + 1, x, y);
 
-            int vertexIndex = 0;
+            float u = Fade(xf);
+            float v = Fade(yf);
 
-            // Generate vertices
-            for (int y = 0; y < MAP_SIZE; y++)
-            {
-                for (int x = 0; x < MAP_SIZE; x++)
-                {
-                    // Scale and center the terrain
-                    float posX = (x - MAP_SIZE / 2f) * 0.05f;
-                    float posY = h[x, y] * 2.0f; // Height (scaled up for visibility)
-                    float posZ = (y - MAP_SIZE / 2f) * 0.05f;
+            float nx0 = Lerp(n00, n10, u);
+            float nx1 = Lerp(n01, n11, u);
 
-                    vertices[vertexIndex++] = posX;
-                    vertices[vertexIndex++] = posY;
-                    vertices[vertexIndex++] = posZ;
+            return Lerp(nx0, nx1, v);
+        }
 
-                    // Color based on height (green lowlands, brown/white highlands)
-                    float heightValue = h[x, y];
-                    if (heightValue < 0.3f)
-                    {
-                        // Low areas - green/blue (water/grass)
-                        vertices[vertexIndex++] = 0.2f;
-                        vertices[vertexIndex++] = 0.5f + heightValue;
-                        vertices[vertexIndex++] = 0.3f;
-                    }
-                    else if (heightValue < 0.7f)
-                    {
-                        // Mid areas - brown/green (hills)
-                        vertices[vertexIndex++] = 0.4f + heightValue * 0.3f;
-                        vertices[vertexIndex++] = 0.5f;
-                        vertices[vertexIndex++] = 0.2f;
-                    }
-                    else
-                    {
-                        // High areas - white/gray (mountains)
-                        vertices[vertexIndex++] = 0.8f + heightValue * 0.2f;
-                        vertices[vertexIndex++] = 0.8f + heightValue * 0.2f;
-                        vertices[vertexIndex++] = 0.9f + heightValue * 0.1f;
-                    }
-                }
-            }
+        private float DotGridGradient(int ix, int iy, float x, float y)
+        {
+            float dx = x - ix;
+            float dy = y - iy;
 
-            // Generate indices for quads (2 triangles per quad)
-            int indexIndex = 0;
-            for (int y = 0; y < gridSize; y++)
+            int hash = (ix * 374761393 + iy * 668265263) % 4;
+            float gx = (hash & 1) == 0 ? 1 : -1;
+            float gy = (hash & 2) == 0 ? 1 : -1;
+
+            return dx * gx + dy * gy;
+        }
+
+        private float Fade(float t)
+        {
+            return t * t * t * (t * (t * 6 - 15) + 10);
+        }
+
+        private float Lerp(float a, float b, float t)
+        {
+            return a + t * (b - a);
+        }
+
+        private void PrepareVertexData()
+        {
+            int gridSize = MAP_SIZE - 1;
+            int totalFloats = gridSize * gridSize * 2 * 3 * 6;
+            vertexData = new float[totalFloats];
+
+            Console.WriteLine($"Vertex buffer: {totalFloats} floats = {totalFloats * 4 / 1024 / 1024f:F2} MB");
+
+            int index = 0;
+
+            for (int z = 0; z < gridSize; z++)
             {
                 for (int x = 0; x < gridSize; x++)
                 {
-                    uint topLeft = (uint)(y * MAP_SIZE + x);
-                    uint topRight = (uint)(y * MAP_SIZE + x + 1);
-                    uint bottomLeft = (uint)((y + 1) * MAP_SIZE + x);
-                    uint bottomRight = (uint)((y + 1) * MAP_SIZE + x + 1);
+                    float x0 = (x - MAP_SIZE / 2f) * 0.05f;
+                    float x1 = ((x + 1) - MAP_SIZE / 2f) * 0.05f;
+                    float z0 = (z - MAP_SIZE / 2f) * 0.05f;
+                    float z1 = ((z + 1) - MAP_SIZE / 2f) * 0.05f;
 
-                    // First triangle
-                    indices[indexIndex++] = topLeft;
-                    indices[indexIndex++] = bottomLeft;
-                    indices[indexIndex++] = topRight;
+                    float y00 = h[x, z] * 2.0f;
+                    float y10 = h[x + 1, z] * 2.0f;
+                    float y01 = h[x, z + 1] * 2.0f;
+                    float y11 = h[x + 1, z + 1] * 2.0f;
 
-                    // Second triangle
-                    indices[indexIndex++] = topRight;
-                    indices[indexIndex++] = bottomLeft;
-                    indices[indexIndex++] = bottomRight;
+                    float[] color00 = GetHeightColor(h[x, z]);
+                    float[] color10 = GetHeightColor(h[x + 1, z]);
+                    float[] color01 = GetHeightColor(h[x, z + 1]);
+                    float[] color11 = GetHeightColor(h[x + 1, z + 1]);
+
+                    // Triangle 1
+                    AddVertex(ref index, x0, y00, z0, color00);
+                    AddVertex(ref index, x0, y01, z1, color01);
+                    AddVertex(ref index, x1, y10, z0, color10);
+
+                    // Triangle 2
+                    AddVertex(ref index, x1, y10, z0, color10);
+                    AddVertex(ref index, x0, y01, z1, color01);
+                    AddVertex(ref index, x1, y11, z1, color11);
                 }
             }
+
+            vertexCount = index / 6;
+            Console.WriteLine($"Vertices: {vertexCount} | Triangles: {vertexCount / 3}");
+        }
+
+        private void AddVertex(ref int index, float x, float y, float z, float[] color)
+        {
+            vertexData[index++] = x;
+            vertexData[index++] = y;
+            vertexData[index++] = z;
+            vertexData[index++] = color[0];
+            vertexData[index++] = color[1];
+            vertexData[index++] = color[2];
+        }
+
+        private float[] GetHeightColor(float height)
+        {
+            if (height < 0.3f)
+                return new float[] { 0.2f, 0.5f + height, 0.3f };
+            else if (height < 0.7f)
+                return new float[] { 0.4f + height * 0.3f, 0.5f, 0.2f };
+            else
+                return new float[] { 0.8f + height * 0.2f, 0.8f + height * 0.2f, 0.9f + height * 0.1f };
         }
 
         public void Init()
         {
-            // Enable depth testing for 3D
             GL.Enable(EnableCap.DepthTest);
             GL.DepthFunc(DepthFunction.Less);
-
-            // Enable backface culling for performance
             GL.Enable(EnableCap.CullFace);
             GL.CullFace(CullFaceMode.Back);
+            GL.ClearColor(0.2f, 0.3f, 0.4f, 1.0f);
 
-            GL.ClearColor(0.2f, 0.3f, 0.4f, 1.0f); // Sky blue background
-
-            // Load heightmap
-            Console.WriteLine("Loading heightmap...");
             LoadHeightmap("heightmap.png");
-
-            // Generate terrain mesh
-            GenerateTerrainMesh(out float[] vertices, out uint[] indices);
-
-            // Create VAO
-            vao = GL.GenVertexArray();
-            GL.BindVertexArray(vao);
+            PrepareVertexData();
 
             // Create VBO
             vbo = GL.GenBuffer();
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
-            GL.BufferData(BufferTarget.ArrayBuffer, vertices.Length * sizeof(float), vertices, BufferUsageHint.StaticDraw);
+            GL.BufferData(BufferTarget.ArrayBuffer,
+                         vertexData.Length * sizeof(float),
+                         vertexData,
+                         BufferUsageHint.StaticDraw);
 
-            // Create EBO (Element Buffer Object)
-            ebo = GL.GenBuffer();
-            GL.BindBuffer(BufferTarget.ElementArrayBuffer, ebo);
-            GL.BufferData(BufferTarget.ElementArrayBuffer, indices.Length * sizeof(uint), indices, BufferUsageHint.StaticDraw);
+            // Create VAO
+            vao = GL.GenVertexArray();
+            GL.BindVertexArray(vao);
+            GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
 
-            // Position attribute (location = 0)
             GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 6 * sizeof(float), 0);
             GL.EnableVertexAttribArray(0);
-
-            // Color attribute (location = 1)
             GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, 6 * sizeof(float), 3 * sizeof(float));
             GL.EnableVertexAttribArray(1);
 
-            // Vertex shader - handles 3D transformations
             string vertexShaderSource = @"
                 #version 330 core
                 layout(location = 0) in vec3 aPosition;
@@ -230,7 +252,6 @@ namespace WindowEngine
                     vColor = aColor;
                 }";
 
-            // Fragment shader
             string fragmentShaderSource = @"
                 #version 330 core
                 in vec3 vColor;
@@ -241,7 +262,6 @@ namespace WindowEngine
                     FragColor = vec4(vColor, 1.0);
                 }";
 
-            // Compile shaders
             int vertexShader = GL.CreateShader(ShaderType.VertexShader);
             GL.ShaderSource(vertexShader, vertexShaderSource);
             GL.CompileShader(vertexShader);
@@ -252,58 +272,76 @@ namespace WindowEngine
             GL.CompileShader(fragmentShader);
             CheckShaderError(fragmentShader, "Fragment Shader");
 
-            // Link shader program
             shaderProgram = GL.CreateProgram();
             GL.AttachShader(shaderProgram, vertexShader);
             GL.AttachShader(shaderProgram, fragmentShader);
             GL.LinkProgram(shaderProgram);
             CheckProgramError(shaderProgram);
 
-            // Clean up shaders
             GL.DeleteShader(vertexShader);
             GL.DeleteShader(fragmentShader);
 
-            Console.WriteLine("3D Terrain initialized successfully!");
-            Console.WriteLine("Controls:");
-            Console.WriteLine("  Arrow Keys - Rotate camera");
-            Console.WriteLine("  Z/X - Flyover closer/farther");
-            Console.WriteLine("  R - Reset view");
+            Console.WriteLine("\n=== CONTROLS ===");
+            Console.WriteLine("Arrow Keys: Rotate");
+            Console.WriteLine("Z/X: Zoom in/out");
+            Console.WriteLine("W: Toggle wave animation");
+            Console.WriteLine("R: Reset view");
+            Console.WriteLine("ESC: Exit");
 
             CheckGLError("After Init");
         }
 
         public void HandleInput(KeyboardState keyboard, float deltaTime)
         {
-            // Rotation controls
             if (keyboard.IsKeyDown(Keys.Left))
                 rotationAngle -= 1.0f * deltaTime * 60f;
 
             if (keyboard.IsKeyDown(Keys.Right))
                 rotationAngle += 1.0f * deltaTime * 60f;
 
-            // Flyover controls
             if (keyboard.IsKeyDown(Keys.Z))
-                flyoverZ += 2.0f * deltaTime; // Move closer
+                flyoverZ += 2.0f * deltaTime;
 
             if (keyboard.IsKeyDown(Keys.X))
-                flyoverZ -= 2.0f * deltaTime; // Move farther
+                flyoverZ -= 2.0f * deltaTime;
 
-            // Clamp flyover distance
             flyoverZ = Math.Clamp(flyoverZ, -15.0f, -2.0f);
 
-            // Reset view
+            if (keyboard.IsKeyPressed(Keys.W))
+            {
+                animateWaves = !animateWaves;
+                Console.WriteLine($"Wave animation: {(animateWaves ? "ON" : "OFF")}");
+            }
+
             if (keyboard.IsKeyPressed(Keys.R))
             {
                 rotationAngle = 0.0f;
                 flyoverZ = -5.0f;
+                animateWaves = false;
                 Console.WriteLine("View reset");
             }
         }
 
         public void Tick()
         {
-            // Auto-rotate slowly for demo effect
             rotationAngle += 0.2f;
+
+            if (animateWaves)
+            {
+                timeAccumulator += 0.016f;
+            }
+
+            // FPS counter
+            frameCount++;
+            elapsedTime = fpsTimer.Elapsed.TotalSeconds;
+
+            if (elapsedTime >= 1.0)
+            {
+                currentFPS = frameCount / elapsedTime;
+                Console.WriteLine($"FPS: {currentFPS:F1} | Vertices: {vertexCount} | Draw calls: 1");
+                frameCount = 0;
+                fpsTimer.Restart();
+            }
 
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
             RenderGL();
@@ -314,22 +352,28 @@ namespace WindowEngine
         {
             GL.UseProgram(shaderProgram);
 
-            // Model matrix - rotation around Y axis
+            // Model matrix with optional wave animation
             Matrix4 model = Matrix4.CreateRotationY(MathHelper.DegreesToRadians(rotationAngle));
 
-            // View matrix - camera looking at terrain from above and behind
+            if (animateWaves)
+            {
+                // Add wavy motion
+                model = Matrix4.CreateScale(1.0f, 1.0f + 0.1f * (float)Math.Sin(timeAccumulator), 1.0f) * model;
+            }
+
+            // View matrix
             Vector3 cameraPos = new Vector3(0, 2.0f, flyoverZ);
             Vector3 cameraTarget = new Vector3(0, 0, 0);
             Vector3 cameraUp = new Vector3(0, 1, 0);
             Matrix4 view = Matrix4.LookAt(cameraPos, cameraTarget, cameraUp);
 
-            // Projection matrix - perspective
+            // Projection matrix
             float aspectRatio = screen.width / (float)screen.height;
             Matrix4 projection = Matrix4.CreatePerspectiveFieldOfView(
-                MathHelper.DegreesToRadians(45.0f), // FOV
+                MathHelper.DegreesToRadians(45.0f),
                 aspectRatio,
-                0.1f,  // Near plane
-                100.0f // Far plane
+                0.1f,
+                100.0f
             );
 
             // Set uniforms
@@ -341,10 +385,10 @@ namespace WindowEngine
             GL.UniformMatrix4(viewLoc, false, ref view);
             GL.UniformMatrix4(projectionLoc, false, ref projection);
 
-            // Draw terrain
+            // EFFICIENT RENDERING: Single draw call for entire terrain!
+            // This is the power of VBOs - all vertex data already on GPU
             GL.BindVertexArray(vao);
-            int indexCount = (MAP_SIZE - 1) * (MAP_SIZE - 1) * 6;
-            GL.DrawElements(PrimitiveType.Triangles, indexCount, DrawElementsType.UnsignedInt, 0);
+            GL.DrawArrays(PrimitiveType.Triangles, 0, vertexCount);
 
             CheckGLError("After RenderGL");
         }
@@ -352,7 +396,6 @@ namespace WindowEngine
         public void Cleanup()
         {
             GL.DeleteBuffer(vbo);
-            GL.DeleteBuffer(ebo);
             GL.DeleteVertexArray(vao);
             GL.DeleteProgram(shaderProgram);
         }
