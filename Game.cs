@@ -8,17 +8,33 @@ namespace WindowEngine
     {
         private readonly Surface screen;
         private int vao, vbo, shaderProgram;
-        private int frameCount = 0;
+        private float angle = 0.0f;
 
         public Game(int width, int height)
         {
             screen = new Surface(width, height);
         }
 
-        // Helper function to create color from RGB components
-        private int CreateColor(int r, int g, int b)
+        // Transform X: Convert world coordinates (-2 to 2) to screen coordinates (0 to width)
+        // World space uses mathematical coordinates where (0,0) is at center
+        private float TX(float x)
         {
-            return (r << 16) + (g << 8) + b;
+            // Map [-2, 2] to [0, width]
+            // Scale by width/4 (since range is 4 units) and shift to center
+            return (x + 2.0f) * (screen.width / 4.0f);
+        }
+
+        // Transform Y: Convert world coordinates (-2 to 2) to screen coordinates (0 to height)
+        // IMPORTANT: Y is inverted because:
+        // - Mathematical/World coordinates: Y increases upward (bottom to top)
+        // - Screen coordinates: Y increases downward (top to bottom)
+        // - OpenGL traditionally uses bottom-left origin, but window systems use top-left
+        // This inversion ensures our world space matches expected mathematical behavior
+        private float TY(float y)
+        {
+            // Map [-2, 2] to [0, height] with Y-inversion
+            // First invert y (negate it), then scale and shift
+            return (-y + 2.0f) * (screen.height / 4.0f);
         }
 
         public void Init()
@@ -28,53 +44,19 @@ namespace WindowEngine
             GL.Disable(EnableCap.DepthTest);
             GL.Disable(EnableCap.CullFace);
 
-            // Create a 300x300 pixel square centered in the window
-            int squareSize = 300;
-            float centerX = screen.width / 2.0f;
-            float centerY = screen.height / 2.0f;
-            float startX = centerX - squareSize / 2.0f;
-            float startY = centerY - squareSize / 2.0f;
+            // Enable line smoothing for better visual quality
+            GL.Enable(EnableCap.LineSmooth);
+            GL.Hint(HintTarget.LineSmoothHint, HintMode.Nicest);
+            GL.LineWidth(2.0f);
 
-            // Create vertices for each pixel in the square
-            // We'll use one vertex per pixel for maximum control
-            int totalPixels = squareSize * squareSize;
-            float[] vertices = new float[totalPixels * 6]; // 6 floats per vertex (3 pos + 3 color)
-
-            int index = 0;
-            for (int y = 0; y < squareSize; y++)
-            {
-                for (int x = 0; x < squareSize; x++)
-                {
-                    // Calculate position
-                    float pixelX = startX + x;
-                    float pixelY = startY + y;
-
-                    // Calculate color based on position
-                    // Red increases with x (0-255)
-                    int red = (x * 255) / squareSize;
-                    // Green increases with y (0-255)
-                    int green = (y * 255) / squareSize;
-                    // Blue will be animated in the shader using time
-                    int blue = 0; // Initial blue value
-
-                    // Position
-                    vertices[index++] = pixelX;
-                    vertices[index++] = pixelY;
-                    vertices[index++] = 0.0f;
-
-                    // Color (normalized to 0-1 range for OpenGL)
-                    vertices[index++] = red / 255.0f;
-                    vertices[index++] = green / 255.0f;
-                    vertices[index++] = blue / 255.0f;
-                }
-            }
-
-            // Create and bind VAO and VBO
+            // Create VAO and VBO for lines
             vao = GL.GenVertexArray();
             vbo = GL.GenBuffer();
             GL.BindVertexArray(vao);
             GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
-            GL.BufferData(BufferTarget.ArrayBuffer, vertices.Length * sizeof(float), vertices, BufferUsageHint.StaticDraw);
+
+            // Allocate buffer for 4 lines (8 vertices total) with position + color
+            GL.BufferData(BufferTarget.ArrayBuffer, 8 * 6 * sizeof(float), IntPtr.Zero, BufferUsageHint.DynamicDraw);
 
             // Vertex attributes: position (3 floats) + color (3 floats)
             GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 6 * sizeof(float), 0);
@@ -96,18 +78,14 @@ namespace WindowEngine
                     vColor = aColor;
                 }";
 
-            // Fragment shader with animated blue tint
+            // Fragment shader
             string fragmentShaderSource = @"
                 #version 330 core
                 in vec3 vColor;
                 out vec4 FragColor;
-                uniform float uTime;
                 void main()
                 {
-                    // Add blue tint that fades over time using sine wave
-                    float blueTint = (sin(uTime) + 1.0) * 0.5; // Oscillates between 0 and 1
-                    vec3 finalColor = vColor + vec3(0.0, 0.0, blueTint * 0.5); // Add up to 0.5 blue
-                    FragColor = vec4(finalColor, 1.0);
+                    FragColor = vec4(vColor, 1.0);
                 }";
 
             // Compile shaders
@@ -142,7 +120,8 @@ namespace WindowEngine
 
         public void Tick()
         {
-            frameCount++;
+            // Update rotation angle
+            angle += 0.01f;
 
             GL.Clear(ClearBufferMask.ColorBufferBit);
             RenderGL();
@@ -151,19 +130,81 @@ namespace WindowEngine
 
         private void RenderGL()
         {
+            // Define square corners in world space (-2 to 2 range)
+            // Base size is 1.0 unit, centered at origin
+            float size = 1.0f;
+
+            // Fun challenge: Make it pulse with sine wave
+            float pulse = 1.0f + 0.3f * (float)Math.Sin(angle * 2.0); // Pulsate between 0.7 and 1.3
+            size *= pulse;
+
+            // Original square corners (before rotation)
+            float[] corners = new float[8] {
+                -size, -size,  // Bottom-left
+                 size, -size,  // Bottom-right
+                 size,  size,  // Top-right
+                -size,  size   // Top-left
+            };
+
+            // Rotate corners using rotation matrix
+            // Rotation formula: 
+            // rx = x * cos(a) - y * sin(a)
+            // ry = x * sin(a) + y * cos(a)
+            float cosA = (float)Math.Cos(angle);
+            float sinA = (float)Math.Sin(angle);
+
+            float[] rotatedCorners = new float[8];
+            for (int i = 0; i < 4; i++)
+            {
+                float x = corners[i * 2];
+                float y = corners[i * 2 + 1];
+
+                rotatedCorners[i * 2] = x * cosA - y * sinA;
+                rotatedCorners[i * 2 + 1] = x * sinA + y * cosA;
+            }
+
+            // Convert to screen coordinates and create line vertices
+            float[] vertices = new float[8 * 6]; // 8 vertices (4 lines * 2 endpoints), 6 floats each
+
+            for (int i = 0; i < 4; i++)
+            {
+                int nextI = (i + 1) % 4;
+
+                // Start vertex of line
+                float x1 = TX(rotatedCorners[i * 2]);
+                float y1 = TY(rotatedCorners[i * 2 + 1]);
+
+                // End vertex of line
+                float x2 = TX(rotatedCorners[nextI * 2]);
+                float y2 = TY(rotatedCorners[nextI * 2 + 1]);
+
+                int idx = i * 12; // 12 floats per line (2 vertices * 6 floats)
+
+                // Start vertex
+                vertices[idx + 0] = x1;
+                vertices[idx + 1] = y1;
+                vertices[idx + 2] = 0.0f;
+                vertices[idx + 3] = 1.0f; // White color (R)
+                vertices[idx + 4] = 1.0f; // White color (G)
+                vertices[idx + 5] = 1.0f; // White color (B)
+
+                // End vertex
+                vertices[idx + 6] = x2;
+                vertices[idx + 7] = y2;
+                vertices[idx + 8] = 0.0f;
+                vertices[idx + 9] = 1.0f; // White color (R)
+                vertices[idx + 10] = 1.0f; // White color (G)
+                vertices[idx + 11] = 1.0f; // White color (B)
+            }
+
+            // Upload vertex data
+            GL.BindBuffer(BufferTarget.ArrayBuffer, vbo);
+            GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, vertices.Length * sizeof(float), vertices);
+
+            // Draw lines
             GL.UseProgram(shaderProgram);
             GL.BindVertexArray(vao);
-
-            // Update time uniform for animated blue tint
-            int timeLoc = GL.GetUniformLocation(shaderProgram, "uTime");
-            float timeValue = frameCount * 0.05f; // Slow down the animation
-            GL.Uniform1(timeLoc, timeValue);
-
-            // Enable point rendering
-            GL.PointSize(1.0f);
-
-            // Draw all pixels as points
-            GL.DrawArrays(PrimitiveType.Points, 0, 300 * 300);
+            GL.DrawArrays(PrimitiveType.Lines, 0, 8);
 
             CheckGLError("After RenderGL");
         }
