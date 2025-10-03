@@ -8,31 +8,66 @@ namespace WindowEngine
     {
         private readonly Surface screen;
         private int vao, vbo, shaderProgram;
+        private int frameCount = 0;
 
         public Game(int width, int height)
         {
             screen = new Surface(width, height);
         }
 
+        // Helper function to create color from RGB components
+        private int CreateColor(int r, int g, int b)
+        {
+            return (r << 16) + (g << 8) + b;
+        }
+
         public void Init()
         {
-            // Set clear color to white as per your previous modification
-            GL.ClearColor(1.0f, 1.0f, 1.0f, 1.0f);
-            // Disable depth testing and culling for 2D rendering
+            // Set clear color to black
+            GL.ClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             GL.Disable(EnableCap.DepthTest);
             GL.Disable(EnableCap.CullFace);
 
-            // Vertex data for a 300x300 pixel square centered in the window
+            // Create a 300x300 pixel square centered in the window
+            int squareSize = 300;
             float centerX = screen.width / 2.0f;
             float centerY = screen.height / 2.0f;
-            float halfSize = 150.0f; // Half of 300 pixels
-            float[] vertices = {
-                // Positions (in pixels)               // Colors (R, G, B)
-                centerX - halfSize, centerY + halfSize, 0.0f,  0.0f, 0.0f, 0.0f,  // Bottom-left: black
-                centerX + halfSize, centerY + halfSize, 0.0f,  0.0f, 0.0f, 1.0f,  // Bottom-right: light blue (255/255)
-                centerX + halfSize, centerY - halfSize, 0.0f,  0.0f, 0.0f, 1.0f,  // Top-right: light blue (255/255)
-                centerX - halfSize, centerY - halfSize, 0.0f,  0.0f, 0.0f, 0.0f   // Top-left: black
-            };
+            float startX = centerX - squareSize / 2.0f;
+            float startY = centerY - squareSize / 2.0f;
+
+            // Create vertices for each pixel in the square
+            // We'll use one vertex per pixel for maximum control
+            int totalPixels = squareSize * squareSize;
+            float[] vertices = new float[totalPixels * 6]; // 6 floats per vertex (3 pos + 3 color)
+
+            int index = 0;
+            for (int y = 0; y < squareSize; y++)
+            {
+                for (int x = 0; x < squareSize; x++)
+                {
+                    // Calculate position
+                    float pixelX = startX + x;
+                    float pixelY = startY + y;
+
+                    // Calculate color based on position
+                    // Red increases with x (0-255)
+                    int red = (x * 255) / squareSize;
+                    // Green increases with y (0-255)
+                    int green = (y * 255) / squareSize;
+                    // Blue will be animated in the shader using time
+                    int blue = 0; // Initial blue value
+
+                    // Position
+                    vertices[index++] = pixelX;
+                    vertices[index++] = pixelY;
+                    vertices[index++] = 0.0f;
+
+                    // Color (normalized to 0-1 range for OpenGL)
+                    vertices[index++] = red / 255.0f;
+                    vertices[index++] = green / 255.0f;
+                    vertices[index++] = blue / 255.0f;
+                }
+            }
 
             // Create and bind VAO and VBO
             vao = GL.GenVertexArray();
@@ -57,18 +92,22 @@ namespace WindowEngine
                 void main()
                 {
                     vec2 normalized = (aPosition.xy / uResolution) * 2.0 - 1.0;
-                    gl_Position = vec4(normalized.x, -normalized.y, 0.0, 1.0); // Flip y for correct orientation
+                    gl_Position = vec4(normalized.x, -normalized.y, 0.0, 1.0);
                     vColor = aColor;
                 }";
 
-            // Fragment shader
+            // Fragment shader with animated blue tint
             string fragmentShaderSource = @"
                 #version 330 core
                 in vec3 vColor;
                 out vec4 FragColor;
+                uniform float uTime;
                 void main()
                 {
-                    FragColor = vec4(vColor, 1.0);
+                    // Add blue tint that fades over time using sine wave
+                    float blueTint = (sin(uTime) + 1.0) * 0.5; // Oscillates between 0 and 1
+                    vec3 finalColor = vColor + vec3(0.0, 0.0, blueTint * 0.5); // Add up to 0.5 blue
+                    FragColor = vec4(finalColor, 1.0);
                 }";
 
             // Compile shaders
@@ -103,6 +142,8 @@ namespace WindowEngine
 
         public void Tick()
         {
+            frameCount++;
+
             GL.Clear(ClearBufferMask.ColorBufferBit);
             RenderGL();
             CheckGLError("After Tick");
@@ -112,7 +153,18 @@ namespace WindowEngine
         {
             GL.UseProgram(shaderProgram);
             GL.BindVertexArray(vao);
-            GL.DrawArrays(PrimitiveType.TriangleFan, 0, 4); // Draw square as triangle fan
+
+            // Update time uniform for animated blue tint
+            int timeLoc = GL.GetUniformLocation(shaderProgram, "uTime");
+            float timeValue = frameCount * 0.05f; // Slow down the animation
+            GL.Uniform1(timeLoc, timeValue);
+
+            // Enable point rendering
+            GL.PointSize(1.0f);
+
+            // Draw all pixels as points
+            GL.DrawArrays(PrimitiveType.Points, 0, 300 * 300);
+
             CheckGLError("After RenderGL");
         }
 
